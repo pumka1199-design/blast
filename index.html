@@ -362,36 +362,35 @@ body::before{
 #back-btn:active svg { transform: translateX(-6px) scale(.92); }
 
 /* ═══ GRID ═══ */
-#grid-wrap{position:relative;background:#16213a;border-radius:18px;padding:7px;box-shadow:0 12px 40px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.06);flex-shrink:0;transform:translateZ(0);contain:layout;}
-#grid{display:grid;position:relative;contain:layout style;}
+#grid-wrap{position:relative;background:#16213a;border-radius:18px;padding:7px;box-shadow:0 12px 40px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.06);flex-shrink:0;transform:translateZ(0);}
+#grid{display:grid;position:relative;}
 /* ── EMPTY CELL ── */
 .cell{
-  border-radius:12px;
+  border-radius:6px;
   background:#1a2540;
   position:relative;
   transition:transform .08s;
   transform:translateZ(0);
-  contain:layout style;
 }
 /* ── FILLED CELL — flat matte block with one soft highlight on top ── */
 .cell.filled{
-  border-radius:14px;
+  border-radius:6px;
   box-shadow:
-    inset 0 4px 0 rgba(255,255,255,.28),   /* top shine */
-    inset 0 -3px 0 rgba(0,0,0,.18),         /* bottom shadow */
-    0 3px 6px rgba(0,0,0,.25);              /* drop shadow */
+    inset 0 3px 0 rgba(255,255,255,.26),
+    inset 0 -2px 0 rgba(0,0,0,.18),
+    0 2px 4px rgba(0,0,0,.22);
 }
 .cell.hl-valid{
-  box-shadow:inset 0 0 0 2.5px rgba(255,255,255,.55)!important;
-  border-radius:14px!important;
+  box-shadow:inset 0 0 0 2px rgba(255,255,255,.55)!important;
+  border-radius:6px!important;
 }
 .cell.hl-bad{
   background:rgba(255,60,60,.45)!important;
-  box-shadow:inset 0 0 0 2.5px rgba(255,80,80,.75)!important;
-  border-radius:14px!important;
+  box-shadow:inset 0 0 0 2px rgba(255,80,80,.75)!important;
+  border-radius:6px!important;
 }
 .cell.line-ready{
-  border-radius:14px!important;
+  border-radius:6px!important;
   z-index:10;
   overflow:hidden;
   animation:lineReadyPulse .55s ease-in-out infinite alternate;
@@ -402,7 +401,7 @@ body::before{
   100%{opacity:1;}
 }
 .cell.line-ready::after{
-  content:'';position:absolute;inset:0;border-radius:14px;
+  content:'';position:absolute;inset:0;border-radius:6px;
   background:linear-gradient(115deg,transparent 20%,rgba(255,255,255,.35) 50%,transparent 80%);
   background-size:200% 100%;
   animation:shimmer .65s ease infinite;
@@ -411,8 +410,8 @@ body::before{
 @keyframes shimmer{0%{background-position:-100% 0;}100%{background-position:200% 0;}}
 .cell.dead-hl{
   background:rgba(255,50,50,.38)!important;
-  box-shadow:inset 0 0 0 2.5px rgba(255,80,80,.85)!important;
-  border-radius:14px!important;
+  box-shadow:inset 0 0 0 2px rgba(255,80,80,.85)!important;
+  border-radius:6px!important;
   animation:deadPulse .4s ease infinite alternate;
 }
 @keyframes deadPulse{0%{opacity:.65;}100%{opacity:1;}}
@@ -1676,22 +1675,29 @@ function _clearLines(brd) {
 // ═══════════════════════════════════════════════
 //  RENDER PIECES
 // ═══════════════════════════════════════════════
+const _grid2DCache = new Map();
 function makeGrid2D(shape){
+  const key = shape.map(s=>s.join(',')).join(';');
+  if(_grid2DCache.has(key)) return _grid2DCache.get(key);
   const R=Math.max(...shape.map(s=>s[0]))+1,C=Math.max(...shape.map(s=>s[1]))+1;
   const m=Array.from({length:R},()=>Array(C).fill(false));
   shape.forEach(([r,c])=>m[r][c]=true);
-  return{m,R,C};
+  const result={m,R,C};
+  if(_grid2DCache.size>50) _grid2DCache.clear(); // prevent unbounded growth
+  _grid2DCache.set(key,result);
+  return result;
 }
 function buildPieceDOM(piece,cs,gs){
   const{m,R,C}=makeGrid2D(piece.shape);
   const wrap=document.createElement('div');
   wrap.style.cssText=`display:grid;grid-template-columns:repeat(${C},${cs}px);grid-template-rows:repeat(${R},${cs}px);gap:${gs}px;`;
+  const hi=Math.max(2, Math.round(cs*.10));
+  const sh=Math.max(1, Math.round(cs*.07));
+  const BR=5; // fixed blocky radius
   for(let row=0;row<R;row++) for(let col=0;col<C;col++){
     const d=document.createElement('div');
     if(!m[row][col]){d.style.cssText=`width:${cs}px;height:${cs}px;`;wrap.appendChild(d);continue;}
-    const hi=Math.round(cs*.12);
-    const br=Math.round(cs*.22);
-    d.style.cssText=`width:${cs}px;height:${cs}px;background:${HEX[piece.color]};border-radius:${br}px;box-shadow:inset 0 ${hi}px 0 rgba(255,255,255,.28),inset 0 -${Math.round(cs*.09)}px 0 rgba(0,0,0,.14),0 2px 5px rgba(0,0,0,.22);`;
+    d.style.cssText=`width:${cs}px;height:${cs}px;background:${HEX[piece.color]};border-radius:${BR}px;box-shadow:inset 0 ${hi}px 0 rgba(255,255,255,.26),inset 0 -${sh}px 0 rgba(0,0,0,.16),0 2px 4px rgba(0,0,0,.2);`;
     wrap.appendChild(d);
   }
   return wrap;
@@ -1718,11 +1724,19 @@ function renderSlot(i){
 // ═══════════════════════════════════════════════
 //  DRAG
 // ═══════════════════════════════════════════════
-function gridOrigin(){const r=document.getElementById('grid-wrap').getBoundingClientRect();return{x:r.left+GPAD,y:r.top+GPAD};}
+let _cachedGridOrigin = null;
+function gridOrigin(){
+  if(_cachedGridOrigin) return _cachedGridOrigin;
+  const r=document.getElementById('grid-wrap').getBoundingClientRect();
+  return{x:r.left+GPAD,y:r.top+GPAD};
+}
 function cursorToBoard(cx,cy,shape){
   const{R,C}=makeGrid2D(shape),o=gridOrigin();
   return{baseR:Math.round((cy-(R*STEP-GAP)/2-o.y)/STEP),baseC:Math.round((cx-(C*STEP-GAP)/2-o.x)/STEP)};
 }
+// Pre-computed Set for O(1) lookup during applyHL
+const hlSet = new Set(); // tracks r*COLS+c of highlighted cells
+
 function clearHL(){
   hlCells.forEach(el=>{
     const r=+el.dataset.r,c=+el.dataset.c;
@@ -1731,27 +1745,85 @@ function clearHL(){
     else{el.className='cell';el.style.background='';}
   });
   hlCells=[];
+  hlSet.clear();
 }
+
 function applyHL(baseR,baseC,shape,valid){
   clearHL();
   if(!valid){
-    for(const[dr,dc]of shape){const r=baseR+dr,c=baseC+dc;if(r<0||r>=ROWS||c<0||c>=COLS)continue;const el=getCell(r,c);if(!el)continue;el.style.background='';el.classList.add('hl-bad');hlCells.push(el);}
+    for(let i=0;i<shape.length;i++){
+      const r=baseR+shape[i][0],c=baseC+shape[i][1];
+      if(r<0||r>=ROWS||c<0||c>=COLS)continue;
+      const el=getCell(r,c);if(!el)continue;
+      el.style.background='';el.classList.add('hl-bad');
+      hlCells.push(el);hlSet.add(r*COLS+c);
+    }
     return;
   }
-  const tmp=board.map(row=>[...row]);
-  shape.forEach(([dr,dc])=>tmp[baseR+dr][baseC+dc]=pieces[dragIdx].color);
-  const rowsClear=new Set([...new Set(shape.map(([r])=>baseR+r))].filter(r=>tmp[r].every(v=>v)));
-  const colsClear=new Set([...new Set(shape.map(([,c])=>baseC+c))].filter(c=>[...Array(ROWS)].every((_,r)=>tmp[r][c])));
   const pColor=HEX[pieces[dragIdx].color];
-  for(const[dr,dc]of shape){
-    const r=baseR+dr,c=baseC+dc;if(r<0||r>=ROWS||c<0||c>=COLS)continue;
+
+  // Detect which rows/cols will clear — without board.map()
+  // For each touched row: check if all COLS are filled (board OR shape)
+  const touchedRows=new Set(), touchedCols=new Set();
+  for(let i=0;i<shape.length;i++){touchedRows.add(baseR+shape[i][0]);touchedCols.add(baseC+shape[i][1]);}
+
+  // Build shape lookup for fast "is this cell in shape?"
+  const shapeSet=new Set();
+  for(let i=0;i<shape.length;i++) shapeSet.add((baseR+shape[i][0])*COLS+(baseC+shape[i][1]));
+
+  const rowsClear=new Set(), colsClear=new Set();
+  for(const r of touchedRows){
+    if(r<0||r>=ROWS)continue;
+    let full=true;
+    for(let c=0;c<COLS;c++){if(!board[r][c]&&!shapeSet.has(r*COLS+c)){full=false;break;}}
+    if(full)rowsClear.add(r);
+  }
+  for(const c of touchedCols){
+    if(c<0||c>=COLS)continue;
+    let full=true;
+    for(let r=0;r<ROWS;r++){if(!board[r][c]&&!shapeSet.has(r*COLS+c)){full=false;break;}}
+    if(full)colsClear.add(c);
+  }
+
+  // Mark shape cells
+  for(let i=0;i<shape.length;i++){
+    const r=baseR+shape[i][0],c=baseC+shape[i][1];
+    if(r<0||r>=ROWS||c<0||c>=COLS)continue;
+    const key=r*COLS+c;
     const el=getCell(r,c);if(!el)continue;
     el.style.background=pColor;
-    el.classList.add('filled',rowsClear.has(r)||colsClear.has(c)?'line-ready':'hl-valid');
-    hlCells.push(el);
+    el.classList.add('filled', rowsClear.has(r)||colsClear.has(c)?'line-ready':'hl-valid');
+    hlCells.push(el);hlSet.add(key);
   }
-  rowsClear.forEach(r=>{for(let c=0;c<COLS;c++){const el=getCell(r,c);if(!el)return;el.classList.remove('hl-valid');el.classList.add('filled','line-ready');el.style.background=pColor;if(!hlCells.includes(el))hlCells.push(el);}});
-  colsClear.forEach(c=>{for(let r=0;r<ROWS;r++){const el=getCell(r,c);if(!el)return;el.classList.remove('hl-valid');el.classList.add('filled','line-ready');el.style.background=pColor;if(!hlCells.includes(el))hlCells.push(el);}});
+  // Mark full row cells
+  rowsClear.forEach(r=>{
+    for(let c=0;c<COLS;c++){
+      const key=r*COLS+c;
+      const el=getCell(r,c);if(!el)continue;
+      if(hlSet.has(key)){
+        // already added by shape — upgrade to line-ready
+        el.classList.remove('hl-valid');el.classList.add('line-ready');
+      } else {
+        el.classList.remove('hl-valid');el.classList.add('filled','line-ready');
+        el.style.background=pColor;
+        hlCells.push(el);hlSet.add(key);
+      }
+    }
+  });
+  // Mark full col cells
+  colsClear.forEach(c=>{
+    for(let r=0;r<ROWS;r++){
+      const key=r*COLS+c;
+      const el=getCell(r,c);if(!el)continue;
+      if(hlSet.has(key)){
+        el.classList.remove('hl-valid');el.classList.add('line-ready');
+      } else {
+        el.classList.remove('hl-valid');el.classList.add('filled','line-ready');
+        el.style.background=pColor;
+        hlCells.push(el);hlSet.add(key);
+      }
+    }
+  });
 }
 const ghostEl=document.getElementById('ghost');
 let _ghostLastPieceKey = null;
@@ -1761,13 +1833,13 @@ function showGhost(cx,cy,piece){
     _ghostLastPieceKey = key;
     ghostEl.innerHTML='';
     const{m,R,C}=makeGrid2D(piece.shape);
-    ghostEl.style.cssText=`display:grid;grid-template-columns:repeat(${C},${CELL}px);grid-template-rows:repeat(${R},${CELL}px);gap:${GAP}px;opacity:.93;filter:drop-shadow(0 8px 16px rgba(0,0,0,.45));`;
+    ghostEl.style.cssText=`display:grid;grid-template-columns:repeat(${C},${CELL}px);grid-template-rows:repeat(${R},${CELL}px);gap:${GAP}px;opacity:.92;`;
+    const hi=Math.max(2,Math.round(CELL*.10));
+    const sh=Math.max(1,Math.round(CELL*.07));
     for(let row=0;row<R;row++) for(let col=0;col<C;col++){
       const d=document.createElement('div');
       if(!m[row][col]){d.style.cssText=`width:${CELL}px;height:${CELL}px;`;ghostEl.appendChild(d);continue;}
-      const hi=Math.round(CELL*.12);
-      const br=Math.round(CELL*.22);
-      d.style.cssText=`width:${CELL}px;height:${CELL}px;background:${HEX[piece.color]};border-radius:${br}px;box-shadow:inset 0 ${hi}px 0 rgba(255,255,255,.3),inset 0 -${Math.round(CELL*.09)}px 0 rgba(0,0,0,.16),0 4px 10px rgba(0,0,0,.3);`;
+      d.style.cssText=`width:${CELL}px;height:${CELL}px;background:${HEX[piece.color]};border-radius:5px;box-shadow:inset 0 ${hi}px 0 rgba(255,255,255,.28),inset 0 -${sh}px 0 rgba(0,0,0,.16),0 3px 8px rgba(0,0,0,.3);`;
       ghostEl.appendChild(d);
     }
   }
@@ -1785,6 +1857,10 @@ function startDrag(e,idx,touch){
   sfx('pickup');
   e.preventDefault();e.stopPropagation();
   dragIdx=idx;
+  _lastHLBaseR=-999;_lastHLBaseC=-999; // reset HL cache
+  // Cache grid origin at drag start (doesn't change during drag)
+  const gr=document.getElementById('grid-wrap').getBoundingClientRect();
+  _cachedGridOrigin={x:gr.left+GPAD,y:gr.top+GPAD};
   document.getElementById('s'+idx).classList.add('dragging');
   const cx=touch?e.touches[0].clientX:e.clientX;
   const cy=touch?e.touches[0].clientY:e.clientY;
@@ -1797,16 +1873,21 @@ function startDrag(e,idx,touch){
   else{document.addEventListener('mousemove',onMove);document.addEventListener('mouseup',onUp,{once:true});}
 }
 let _moveRafId = null;
+let _lastHLBaseR = -999, _lastHLBaseC = -999;
 function onMove(e){
   if(dragIdx<0)return;e.preventDefault();
   if(_moveRafId) return; // throttle to rAF
+  // Capture touch coords immediately (not inside rAF — touch event data may be gone)
+  const cx=e.touches?e.touches[0].clientX:e.clientX;
+  const cy=e.touches?e.touches[0].clientY:e.clientY;
   _moveRafId = requestAnimationFrame(()=>{
     _moveRafId = null;
     if(dragIdx<0) return;
-    const cx=e.touches?e.touches[0].clientX:e.clientX;
-    const cy=e.touches?e.touches[0].clientY:e.clientY;
     positionGhost(cx,cy,pieces[dragIdx]);
     const{baseR,baseC}=cursorToBoard(cx,cy-50,pieces[dragIdx].shape);
+    // Skip expensive applyHL if still hovering same grid cell
+    if(baseR===_lastHLBaseR && baseC===_lastHLBaseC) return;
+    _lastHLBaseR=baseR; _lastHLBaseC=baseC;
     applyHL(baseR,baseC,pieces[dragIdx].shape,canPlace(baseR,baseC,pieces[dragIdx].shape));
   });
 }
@@ -1814,6 +1895,7 @@ function onUp(e){
   document.removeEventListener('mousemove',onMove);
   document.removeEventListener('touchmove',onMove);
   if(_moveRafId){ cancelAnimationFrame(_moveRafId); _moveRafId=null; }
+  _cachedGridOrigin=null; // clear cache
   ghostEl.style.display='none';clearHL();
   document.getElementById('s'+dragIdx)?.classList.remove('dragging');
   if(dragIdx<0||!pieces[dragIdx]){dragIdx=-1;return;}
