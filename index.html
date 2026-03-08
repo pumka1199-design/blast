@@ -362,8 +362,8 @@ body::before{
 #back-btn:active svg { transform: translateX(-6px) scale(.92); }
 
 /* ═══ GRID ═══ */
-#grid-wrap{position:relative;background:#16213a;border-radius:18px;padding:7px;box-shadow:0 12px 40px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.06);flex-shrink:0;transform:translateZ(0);}
-#grid{display:grid;position:relative;}
+#grid-wrap{position:relative;background:#16213a;border-radius:18px;padding:7px;box-shadow:0 12px 40px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.06);flex-shrink:0;transform:translateZ(0);contain:layout;}
+#grid{display:grid;position:relative;contain:layout style;}
 /* ── EMPTY CELL ── */
 .cell{
   border-radius:12px;
@@ -371,6 +371,7 @@ body::before{
   position:relative;
   transition:transform .08s;
   transform:translateZ(0);
+  contain:layout style;
 }
 /* ── FILLED CELL — flat matte block with one soft highlight on top ── */
 .cell.filled{
@@ -458,6 +459,10 @@ body::before{
   pointer-events: none;
   z-index: 20;
   will-change: transform, opacity;
+}
+@media (max-width: 600px) {
+  /* Disable ring pseudo-element on mobile - halves animation workload */
+  .cell.vanish-wave::before { display: none; }
 }
 @keyframes cellRing {
   0%   { opacity: 0;   transform: scale(.5); }
@@ -1361,12 +1366,18 @@ function loadSettings() {
     document.getElementById('sfx-toggle')?.classList.toggle('on', sfxEnabled);
   } catch(e){}
 }
+let _saveTimer = null;
 function saveGame() {
   if(!gameActive) return;
-  try {
-    const state = {board, score, pieces, combo, comboTTL, continueUsed, schemeIdx: currentSchemeIdx};
-    localStorage.setItem(SAVE_KEY, JSON.stringify(state));
-  } catch(e){}
+  // Debounce: only save after 500ms idle to avoid blocking UI
+  if(_saveTimer) clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(()=>{
+    _saveTimer = null;
+    try {
+      const state = {board, score, pieces, combo, comboTTL, continueUsed, schemeIdx: currentSchemeIdx};
+      localStorage.setItem(SAVE_KEY, JSON.stringify(state));
+    } catch(e){}
+  }, 500);
 }
 function loadGame() {
   try {
@@ -1512,35 +1523,38 @@ function canPlace(baseR,baseC,shape){
 
 function getShapeScore(s, brd) {
   let best = -1, canFit = false;
-  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) {
-    let ok = true;
-    for(const[dr,dc]of s){ const rr=r+dr,cc=c+dc; if(rr<0||rr>=ROWS||cc<0||cc>=COLS||brd[rr][cc]){ok=false;break;} }
-    if(!ok) continue;
-    canFit = true;
-    const tmp = brd.map(row=>[...row]);
-    s.forEach(([dr,dc])=>tmp[r+dr][c+dc]=true);
-    let rowsClear=0,colsClear=0;
-    for(let rr=0;rr<ROWS;rr++) if(tmp[rr].every(v=>v)) rowsClear++;
-    for(let cc=0;cc<COLS;cc++) if(tmp.every(row=>row[cc])) colsClear++;
-    let lines=rowsClear+colsClear, score=lines*1000;
-    let adj=0;
-    s.forEach(([dr,dc])=>{
-      const br=r+dr,bc=c+dc;
-      if(br-1<0||brd[br-1][bc]) adj++;
-      if(br+1>=ROWS||brd[br+1][bc]) adj++;
-      if(bc-1<0||brd[br][bc-1]) adj++;
-      if(bc+1>=COLS||brd[br][bc+1]) adj++;
-    });
-    score+=adj*5;
-    if(score>best) best=score;
+  for(let r=0;r<ROWS;r++) {
+    for(let c=0;c<COLS;c++) {
+      // Fast fit check
+      let ok = true;
+      for(let i=0;i<s.length;i++){
+        const rr=r+s[i][0], cc=c+s[i][1];
+        if(rr<0||rr>=ROWS||cc<0||cc>=COLS||brd[rr][cc]){ok=false;break;}
+      }
+      if(!ok) continue;
+      canFit = true;
+      // Score: count lines using fast row/col fullness check (no copy)
+      let score = _countLinesAfterPlace(brd, s, r, c) * 1000;
+      // Adjacency bonus
+      for(let i=0;i<s.length;i++){
+        const br=r+s[i][0], bc=c+s[i][1];
+        if(br===0||brd[br-1][bc]) score+=5;
+        if(br===ROWS-1||brd[br+1][bc]) score+=5;
+        if(bc===0||brd[br][bc-1]) score+=5;
+        if(bc===COLS-1||brd[br][bc+1]) score+=5;
+      }
+      if(score>best) best=score;
+    }
   }
   return{canFit, score:best};
 }
 
 function generateSmartPieces() {
-  let filledCount = 0;
-  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) if(board[r][c]) filledCount++;
+  // Run heavy computation in a macrotask so UI doesn't freeze
+  setTimeout(() => _doGenerateSmartPieces(), 0);
+}
 
+function _doGenerateSmartPieces() {
   // Score every shape on the current board
   const ranked = [];
   for(const s of ALL_SHAPES) {
@@ -1556,66 +1570,50 @@ function generateSmartPieces() {
 
   ranked.sort((a,b) => b.score - a.score);
 
-  // Strategy: pick 3 shapes that can ALL fit on the board AND together enable combo clears
-  // We simulate placing piece1, then check piece2 can fit, then check piece3 can fit after piece2
-  const topN = Math.min(ranked.length, 20);
+  // Reduced search space: top 8 shapes, 2-level lookahead only (8*8 = 64 vs 12*12*12 = 1728)
+  const topN = Math.min(ranked.length, 8);
   const topShapes = ranked.slice(0, topN).map(x=>x.shape);
 
   let bestTriple = null;
   let bestTripleScore = -1;
 
-  // Try combinations of top shapes for combo synergy
-  const tryCombinations = Math.min(topN, 12);
-  for(let i=0;i<tryCombinations;i++) {
-    for(let j=0;j<tryCombinations;j++) {
-      if(i===j) continue;
-      for(let k=0;k<tryCombinations;k++) {
+  for(let i=0;i<topN;i++) {
+    const s1 = topShapes[i];
+    // Find best placement of s1 (fast scan)
+    let bstR1=-1, bstC1=-1, bstSc1=-1;
+    for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) {
+      let ok=true;
+      for(const[dr,dc]of s1){if(r+dr>=ROWS||c+dc>=COLS||board[r+dr][c+dc]){ok=false;break;}}
+      if(!ok) continue;
+      // Count lines using bitmask-style check (no array copy)
+      let lns = _countLinesAfterPlace(board, s1, r, c);
+      if(lns > bstSc1){bstSc1=lns;bstR1=r;bstC1=c;}
+    }
+    if(bstR1 < 0) continue;
+
+    // Build tmp1 (one copy only)
+    const tmp1 = board.map(row=>[...row]);
+    s1.forEach(([dr,dc])=>tmp1[bstR1+dr][bstC1+dc]=true);
+    _clearLines(tmp1);
+
+    for(let j=0;j<topN;j++) {
+      if(j===i) continue;
+      const s2 = topShapes[j];
+      const {canFit:f2} = getShapeScore(s2, tmp1);
+      if(!f2) continue;
+
+      // Pick any third piece that fits on tmp1 (no need to simulate s2 placement)
+      for(let k=0;k<topN;k++) {
         if(k===i||k===j) continue;
-        const s1=topShapes[i], s2=topShapes[j], s3=topShapes[k];
-        // Find best placement of s1
-        let bstR1=-1,bstC1=-1,bstSc1=-1;
-        for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) {
-          let ok=true; for(const[dr,dc]of s1){if(r+dr>=ROWS||c+dc>=COLS||board[r+dr][c+dc]){ok=false;break;}}
-          if(ok){
-            const tmp1=board.map(row=>[...row]);
-            s1.forEach(([dr,dc])=>tmp1[r+dr][c+dc]=true);
-            let lns=0;
-            for(let rr=0;rr<ROWS;rr++) if(tmp1[rr].every(v=>v)) lns++;
-            for(let cc=0;cc<COLS;cc++) if(tmp1.every(row=>row[cc])) lns++;
-            if(lns>bstSc1){bstSc1=lns;bstR1=r;bstC1=c;}
-          }
-        }
-        if(bstR1<0) continue;
-        const tmp1=board.map(row=>[...row]);
-        s1.forEach(([dr,dc])=>tmp1[bstR1+dr][bstC1+dc]=true);
-        // Clear lines in tmp1
-        for(let rr=ROWS-1;rr>=0;rr--) if(tmp1[rr].every(v=>v)) tmp1[rr]=Array(COLS).fill(null);
-        for(let cc=0;cc<COLS;cc++) if(tmp1.every(row=>row[cc])) for(let rr=0;rr<ROWS;rr++) tmp1[rr][cc]=null;
-        // s2 must fit on tmp1
-        const {canFit:f2, score:sc2} = getShapeScore(s2, tmp1);
-        if(!f2) continue;
-        // Simulate s2 best placement
-        let bstR2=-1,bstC2=-1,bstSc2=-1;
-        for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++){
-          let ok=true; for(const[dr,dc]of s2){if(r+dr>=ROWS||c+dc>=COLS||tmp1[r+dr][c+dc]){ok=false;break;}}
-          if(ok){
-            const tmp2=tmp1.map(row=>[...row]);
-            s2.forEach(([dr,dc])=>tmp2[r+dr][c+dc]=true);
-            let lns=0;
-            for(let rr=0;rr<ROWS;rr++) if(tmp2[rr].every(v=>v)) lns++;
-            for(let cc=0;cc<COLS;cc++) if(tmp2.every(row=>row[cc])) lns++;
-            if(lns>bstSc2){bstSc2=lns;bstR2=r;bstC2=c;}
-          }
-        }
-        if(bstR2<0) continue;
-        const tmp2=tmp1.map(row=>[...row]);
-        s2.forEach(([dr,dc])=>tmp2[bstR2+dr][bstC2+dc]=true);
-        for(let rr=ROWS-1;rr>=0;rr--) if(tmp2[rr].every(v=>v)) tmp2[rr]=Array(COLS).fill(null);
-        for(let cc=0;cc<COLS;cc++) if(tmp2.every(row=>row[cc])) for(let rr=0;rr<ROWS;rr++) tmp2[rr][cc]=null;
-        const {canFit:f3, score:sc3} = getShapeScore(s3, tmp2);
+        const s3 = topShapes[k];
+        const {canFit:f3, score:sc3} = getShapeScore(s3, tmp1);
         if(!f3) continue;
-        const total = bstSc1*100 + sc2 + sc3 + (ranked[i].score+ranked[j].score+ranked[k].score);
-        if(total > bestTripleScore) { bestTripleScore=total; bestTriple=[s1,s2,s3]; }
+        const total = bstSc1*100 + ranked[i].score + ranked[j].score + sc3;
+        if(total > bestTripleScore) {
+          bestTripleScore = total;
+          bestTriple = [s1, s2, s3];
+        }
+        break; // first valid k is enough
       }
     }
   }
@@ -1624,21 +1622,17 @@ function generateSmartPieces() {
   if(bestTriple) {
     newPieces = bestTriple;
   } else {
-    // Fallback: just pick 3 valid shapes
     newPieces = [];
     const seen = new Set();
     for(const r of ranked) {
-      const key = JSON.stringify(r.shape);
+      const key = r.shape.toString();
       if(!seen.has(key)) { seen.add(key); newPieces.push(r.shape); }
       if(newPieces.length===3) break;
     }
     while(newPieces.length<3) newPieces.push(ranked[0].shape);
   }
 
-  // Shuffle so player doesn't know which order is "optimal"
   newPieces.sort(()=>Math.random()-.5);
-
-  // Pick 3 unique colors for this set
   const shuffledColors = [...COLORS].sort(()=>Math.random()-.5);
   pieces = newPieces.map((shape,i)=>({
     shape,
@@ -1646,8 +1640,37 @@ function generateSmartPieces() {
   }));
 
   renderPieces();
-  roundHadClear = false; // reset for next round
+  roundHadClear = false;
   saveGame();
+}
+
+// Count lines that would clear if shape placed at r,c — NO array copy
+function _countLinesAfterPlace(brd, shape, baseR, baseC) {
+  const touchedRows = new Set();
+  const touchedCols = new Set();
+  shape.forEach(([dr,dc])=>{ touchedRows.add(baseR+dr); touchedCols.add(baseC+dc); });
+  let lines = 0;
+  for(const r of touchedRows) {
+    let full = true;
+    for(let c=0;c<COLS;c++) {
+      if(!brd[r][c] && !shape.some(([dr,dc])=>baseR+dr===r&&baseC+dc===c)){full=false;break;}
+    }
+    if(full) lines++;
+  }
+  for(const c of touchedCols) {
+    let full = true;
+    for(let r=0;r<ROWS;r++) {
+      if(!brd[r][c] && !shape.some(([dr,dc])=>baseC+dc===c&&baseR+dr===r)){full=false;break;}
+    }
+    if(full) lines++;
+  }
+  return lines;
+}
+
+// Clear full rows/cols in-place on a temp board
+function _clearLines(brd) {
+  for(let r=0;r<ROWS;r++) if(brd[r].every(v=>v)) brd[r].fill(null);
+  for(let c=0;c<COLS;c++) if(brd.every(row=>row[c])) for(let r=0;r<ROWS;r++) brd[r][c]=null;
 }
 
 // ═══════════════════════════════════════════════
@@ -1881,22 +1904,41 @@ function checkClears(baseR,baseC,shape, onDone){
   roundHadClear = true;
   if(combo>2)sfx('combo');else sfx('clear');
 
-  // Stronger shake — scale intensity with lines cleared
+  // Shake grid - use rAF to avoid layout thrash
   const gw=document.getElementById('grid-wrap');
   const shakeClass = linesCleared >= 3 ? 'shake-hard' : 'shake';
-  gw.classList.remove('shake','shake-hard'); void gw.offsetWidth; gw.classList.add(shakeClass);
-  gw.addEventListener('animationend',()=>gw.classList.remove('shake','shake-hard'),{once:true});
+  gw.classList.remove('shake','shake-hard');
+  requestAnimationFrame(()=>{
+    gw.classList.add(shakeClass);
+    gw.addEventListener('animationend',()=>gw.classList.remove('shake','shake-hard'),{once:true});
+  });
 
-  // Flash overlay — brighter for combos
-  gw.classList.remove('flash-clear'); void gw.offsetWidth; gw.classList.add('flash-clear');
-  setTimeout(()=>gw.classList.remove('flash-clear'), 550);
+  // Flash overlay
+  gw.classList.remove('flash-clear');
+  requestAnimationFrame(()=>{
+    gw.classList.add('flash-clear');
+    setTimeout(()=>gw.classList.remove('flash-clear'), 550);
+  });
 
   const keys=new Set();
   rows.forEach(r=>{for(let c=0;c<COLS;c++)keys.add(r+','+c);});
   cols.forEach(c=>{for(let r=0;r<ROWS;r++)keys.add(r+','+c);});
 
-  // Spawn particles immediately
-  keys.forEach(k=>{
+  // Spawn particles only at intersections + every 2nd cell (capped total)
+  const isMobile = window.innerWidth < 600;
+  const maxParticleCells = isMobile ? 4 : 8;
+  let ptCount = 0;
+  const keysArr = [...keys];
+  // Prioritize intersection cells (most visual impact)
+  const intersections = keysArr.filter(k=>{
+    const[r,c]=k.split(',').map(Number);
+    return rows.includes(r) && cols.includes(c);
+  });
+  const others = keysArr.filter(k=>!intersections.includes(k));
+  // Sample evenly across the cleared area
+  const step = Math.max(1, Math.floor(others.length / (maxParticleCells - intersections.length)));
+  const toSpawn = [...intersections, ...others.filter((_,i)=>i%step===0)].slice(0, maxParticleCells);
+  toSpawn.forEach(k=>{
     const[r,c]=k.split(',').map(Number);
     spawnParticles(r,c);
   });
@@ -2044,7 +2086,7 @@ function updateComboUI(){
     container.classList.add('show');
     xEl.textContent=combo;
     const textEl = container.querySelector('.combo-text');
-    if(textEl){ textEl.classList.remove('pop'); void textEl.offsetWidth; textEl.classList.add('pop'); }
+    if(textEl){ textEl.classList.remove('pop'); requestAnimationFrame(()=>textEl.classList.add('pop')); }
     for(let i=0;i<COMBO_TTL;i++){
       const d=document.getElementById('cd'+i);
       if(d) d.classList.toggle('lit', i<comboTTL);
@@ -2067,7 +2109,7 @@ function addScore(pts,anim){
   if(anim){
     animateCount(displayScore,score,displayBest,best);
     const el=document.getElementById('score-val');
-    el.classList.remove('bump');void el.offsetWidth;el.classList.add('bump');
+    el.classList.remove('bump'); requestAnimationFrame(()=>el.classList.add('bump'));
   } else {
     displayScore=score;displayBest=best;
     document.getElementById('score-val').textContent=score;
@@ -2401,8 +2443,7 @@ function renderReplayFrame(idx, animate=true){
     });
     const lines = cr.length + cc.length;
     const sc = lines >= 3 ? 'shake-hard' : 'shake';
-    rgw.classList.remove('shake','shake-hard'); void rgw.offsetWidth; rgw.classList.add(sc);
-    rgw.addEventListener('animationend',()=>rgw.classList.remove('shake','shake-hard'),{once:true});
+    rgw.classList.remove('shake','shake-hard'); requestAnimationFrame(()=>{ rgw.classList.add(sc); rgw.addEventListener('animationend',()=>rgw.classList.remove('shake','shake-hard'),{once:true}); });
   }
 
   // ── Pieces row ──
@@ -2430,7 +2471,7 @@ function renderReplayFrame(idx, animate=true){
   if(animate && frame.score !== prevScore){
     rAnimateScore(rDisplayScore, frame.score);
     const sv = document.getElementById('rp-score');
-    sv.classList.remove('pop'); void sv.offsetWidth; sv.classList.add('pop');
+    sv.classList.remove('pop'); requestAnimationFrame(()=>sv.classList.add('pop'));
   } else {
     rDisplayScore = frame.score;
     document.getElementById('rp-score').textContent = frame.score;
@@ -2443,7 +2484,7 @@ function renderReplayFrame(idx, animate=true){
     const newText = '×'+frame.combo;
     if(comboNum.textContent !== newText && animate){
       comboNum.textContent = newText;
-      comboNum.classList.remove('pop'); void comboNum.offsetWidth; comboNum.classList.add('pop');
+      comboNum.classList.remove('pop'); requestAnimationFrame(()=>comboNum.classList.add('pop'));
     } else {
       comboNum.textContent = newText;
     }
